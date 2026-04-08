@@ -8,6 +8,15 @@ import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/material.dart' hide ConnectionState;
 import 'package:permission_handler/permission_handler.dart';
 
+import 'phone_to_phone_ble/models/chat_message.dart';
+import 'phone_to_phone_ble/widgets/action_card.dart';
+import 'phone_to_phone_ble/widgets/chat_bubble.dart';
+import 'phone_to_phone_ble/widgets/composer_card.dart';
+import 'phone_to_phone_ble/widgets/discovery_card.dart';
+import 'phone_to_phone_ble/widgets/empty_chat_state.dart';
+import 'phone_to_phone_ble/widgets/header_card.dart';
+import 'phone_to_phone_ble/widgets/server_info_card.dart';
+
 class PhoneToPhoneBlePage extends StatefulWidget {
   const PhoneToPhoneBlePage({super.key});
 
@@ -22,7 +31,7 @@ class _PhoneToPhoneBlePageState extends State<PhoneToPhoneBlePage> {
   final PeripheralManager _peripheralManager = PeripheralManager();
   final TextEditingController _messageController = TextEditingController();
   final List<DiscoveredEventArgs> _discoveries = <DiscoveredEventArgs>[];
-  final List<_ChatMessage> _messages = <_ChatMessage>[];
+  final List<ChatMessage> _messages = <ChatMessage>[];
   final UUID _serviceUuid = UUID.fromString(
     '6E400001-B5A3-F393-E0A9-E50E24DCCA9E',
   );
@@ -259,7 +268,7 @@ class _PhoneToPhoneBlePageState extends State<PhoneToPhoneBlePage> {
   void _appendMessage(String label, String text, {required bool outgoing}) {
     _messages.insert(
       0,
-      _ChatMessage(
+      ChatMessage(
         label: label,
         text: text,
         outgoing: outgoing,
@@ -426,8 +435,12 @@ class _PhoneToPhoneBlePageState extends State<PhoneToPhoneBlePage> {
       _subscribed = false;
       _status = chatCharacteristic == null
           ? 'Connected, but chat characteristic not found'
-          : 'Connected to BLE server';
+          : 'Connected. Enabling live updates...';
     });
+
+    if (chatCharacteristic != null) {
+      await _enableRealtimeUpdates(peripheral, chatCharacteristic);
+    }
   }
 
   Future<void> sendMessage() async {
@@ -462,52 +475,36 @@ class _PhoneToPhoneBlePageState extends State<PhoneToPhoneBlePage> {
     });
   }
 
-  Future<void> readCharacteristic() async {
-    if (_connectedPeripheral == null || _chatCharacteristic == null) {
-      return;
-    }
-
-    final value = await _centralManager.readCharacteristic(
-      _connectedPeripheral!,
-      _chatCharacteristic!,
-    );
-    final text = utf8.decode(value, allowMalformed: true);
-
-    if (!mounted) {
-      return;
-    }
-
-    setState(() {
-      _appendMessage('Read', text, outgoing: false);
-      _status = 'Characteristic read completed';
-    });
-  }
-
-  Future<void> toggleSubscription() async {
-    if (_connectedPeripheral == null || _chatCharacteristic == null) {
+  Future<void> _enableRealtimeUpdates(
+    Peripheral peripheral,
+    GATTCharacteristic characteristic,
+  ) async {
+    if (_subscribed) {
       return;
     }
 
     await _centralManager.setCharacteristicNotifyState(
-      _connectedPeripheral!,
-      _chatCharacteristic!,
-      state: !_subscribed,
+      peripheral,
+      characteristic,
+      state: true,
     );
+
+    final initialValue = await _centralManager.readCharacteristic(
+      peripheral,
+      characteristic,
+    );
+    final initialText = utf8.decode(initialValue, allowMalformed: true).trim();
 
     if (!mounted) {
       return;
     }
 
     setState(() {
-      _subscribed = !_subscribed;
-      _appendMessage(
-        _subscribed ? 'Subscribed' : 'Unsubscribed',
-        'Characteristic updates',
-        outgoing: false,
-      );
-      _status = _subscribed
-          ? 'Subscribed to characteristic'
-          : 'Unsubscribed from characteristic';
+      _subscribed = true;
+      if (initialText.isNotEmpty) {
+        _appendMessage('Live value', initialText, outgoing: false);
+      }
+      _status = 'Connected with real-time updates';
     });
   }
 
@@ -619,8 +616,6 @@ class _PhoneToPhoneBlePageState extends State<PhoneToPhoneBlePage> {
     final canSend = !_actingAsServer &&
         _connectedPeripheral != null &&
         _chatCharacteristic != null;
-    final canRead = canSend;
-    final canSubscribe = canSend;
     final serverValue = utf8.decode(_characteristicValue, allowMalformed: true);
 
     return Scaffold(
@@ -632,7 +627,7 @@ class _PhoneToPhoneBlePageState extends State<PhoneToPhoneBlePage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: <Widget>[
-            _HeaderCard(
+            HeaderCard(
               status: _status,
               mode: _actingAsServer ? 'Receiver' : 'Sender',
               connected: _connectedPeripheral != null,
@@ -662,7 +657,7 @@ class _PhoneToPhoneBlePageState extends State<PhoneToPhoneBlePage> {
             const SizedBox(height: 16),
             if (!_actingAsServer && _discoveries.isNotEmpty)
               SizedBox(
-                height: 120,
+                height: 144,
                 child: ListView.separated(
                   scrollDirection: Axis.horizontal,
                   itemCount: _discoveries.length,
@@ -670,7 +665,7 @@ class _PhoneToPhoneBlePageState extends State<PhoneToPhoneBlePage> {
                       const SizedBox(width: 10),
                   itemBuilder: (context, index) {
                     final discovery = _discoveries[index];
-                    return _DiscoveryCard(
+                    return DiscoveryCard(
                       discovery: discovery,
                       enabled: !_connecting,
                       onTap: () => connectToServer(discovery),
@@ -691,35 +686,31 @@ class _PhoneToPhoneBlePageState extends State<PhoneToPhoneBlePage> {
               ),
             const SizedBox(height: 12),
             if (_actingAsServer)
-              _ServerInfoCard(
+              ServerInfoCard(
                 serverValue: serverValue,
                 subscribers: _subscribedCentrals.length,
               )
             else
-              _ActionCard(
-                canRead: canRead,
+              ActionCard(
                 canWrite: canSend,
-                canSubscribe: canSubscribe,
                 subscribed: _subscribed,
-                onRead: readCharacteristic,
                 onWrite: sendMessage,
-                onToggleSubscribe: toggleSubscription,
               ),
             const SizedBox(height: 12),
             Expanded(
               child: _messages.isEmpty
-                  ? const _EmptyChatState()
+                  ? const EmptyChatState()
                   : ListView.separated(
                       reverse: true,
                       itemCount: _messages.length,
                       separatorBuilder: (context, index) =>
                           const SizedBox(height: 10),
                       itemBuilder: (context, index) =>
-                          _ChatBubble(message: _messages[index]),
+                          ChatBubble(message: _messages[index]),
                     ),
             ),
             const SizedBox(height: 12),
-            _ComposerCard(
+            ComposerCard(
               controller: _messageController,
               enabled: canSend || _actingAsServer,
               hintText: _actingAsServer
@@ -736,389 +727,6 @@ class _PhoneToPhoneBlePageState extends State<PhoneToPhoneBlePage> {
             ),
           ],
         ),
-      ),
-    );
-  }
-}
-
-class _ChatMessage {
-  const _ChatMessage({
-    required this.label,
-    required this.text,
-    required this.outgoing,
-    required this.time,
-  });
-
-  final String label;
-  final String text;
-  final bool outgoing;
-  final String time;
-}
-
-class _HeaderCard extends StatelessWidget {
-  const _HeaderCard({
-    required this.status,
-    required this.mode,
-    required this.connected,
-    required this.advertising,
-    required this.scanning,
-    required this.subscribed,
-  });
-
-  final String status;
-  final String mode;
-  final bool connected;
-  final bool advertising;
-  final bool scanning;
-  final bool subscribed;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          colors: <Color>[Colors.blue.shade100, Colors.cyan.shade50],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-        borderRadius: BorderRadius.circular(18),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: <Widget>[
-          Row(
-            children: <Widget>[
-              Text(
-                '$mode Mode',
-                style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              const Spacer(),
-              _MiniBadge(
-                text: connected
-                    ? 'Connected'
-                    : advertising
-                    ? 'Advertising'
-                    : scanning
-                    ? 'Scanning'
-                    : 'Idle',
-              ),
-              if (subscribed) ...<Widget>[
-                const SizedBox(width: 8),
-                const _MiniBadge(text: 'Subscribed'),
-              ],
-            ],
-          ),
-          const SizedBox(height: 10),
-          Text(status),
-        ],
-      ),
-    );
-  }
-}
-
-class _MiniBadge extends StatelessWidget {
-  const _MiniBadge({required this.text});
-
-  final String text;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-      decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.75),
-        borderRadius: BorderRadius.circular(999),
-      ),
-      child: Text(
-        text,
-        style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
-      ),
-    );
-  }
-}
-
-class _DiscoveryCard extends StatelessWidget {
-  const _DiscoveryCard({
-    required this.discovery,
-    required this.enabled,
-    required this.onTap,
-  });
-
-  final DiscoveredEventArgs discovery;
-  final bool enabled;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return SizedBox(
-      width: 220,
-      child: Card(
-        child: InkWell(
-          borderRadius: BorderRadius.circular(12),
-          onTap: enabled ? onTap : null,
-          child: Padding(
-            padding: const EdgeInsets.all(14),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: <Widget>[
-                Text(
-                  discovery.advertisement.name ?? 'BLE Server',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  'RSSI: ${discovery.rssi}',
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  discovery.peripheral.uuid.toString(),
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
-                const Spacer(),
-                const Align(
-                  alignment: Alignment.bottomRight,
-                  child: Icon(Icons.arrow_forward_ios, size: 16),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _ActionCard extends StatelessWidget {
-  const _ActionCard({
-    required this.canRead,
-    required this.canWrite,
-    required this.canSubscribe,
-    required this.subscribed,
-    required this.onRead,
-    required this.onWrite,
-    required this.onToggleSubscribe,
-  });
-
-  final bool canRead;
-  final bool canWrite;
-  final bool canSubscribe;
-  final bool subscribed;
-  final VoidCallback onRead;
-  final VoidCallback onWrite;
-  final VoidCallback onToggleSubscribe;
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Wrap(
-          spacing: 8,
-          runSpacing: 8,
-          children: <Widget>[
-            FilledButton.tonal(
-              onPressed: canRead ? onRead : null,
-              child: const Text('Read'),
-            ),
-            FilledButton.tonal(
-              onPressed: canWrite ? onWrite : null,
-              child: const Text('Write'),
-            ),
-            FilledButton.tonal(
-              onPressed: canSubscribe ? onToggleSubscribe : null,
-              child: Text(subscribed ? 'Unsubscribe' : 'Subscribe'),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _ServerInfoCard extends StatelessWidget {
-  const _ServerInfoCard({
-    required this.serverValue,
-    required this.subscribers,
-  });
-
-  final String serverValue;
-  final int subscribers;
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(14),
-        child: Row(
-          children: <Widget>[
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: <Widget>[
-                  const Text(
-                    'Current Value',
-                    style: TextStyle(fontWeight: FontWeight.bold),
-                  ),
-                  const SizedBox(height: 6),
-                  Text(serverValue),
-                ],
-              ),
-            ),
-            const SizedBox(width: 12),
-            _MiniBadge(text: '$subscribers listener(s)'),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _EmptyChatState extends StatelessWidget {
-  const _EmptyChatState();
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      alignment: Alignment.center,
-      decoration: BoxDecoration(
-        color: Colors.grey.shade100,
-        borderRadius: BorderRadius.circular(20),
-      ),
-      child: const Padding(
-        padding: EdgeInsets.all(24),
-        child: Text(
-          'Your BLE chat activity will appear here.\nWrite, read, subscribe, or publish to start the conversation.',
-          textAlign: TextAlign.center,
-        ),
-      ),
-    );
-  }
-}
-
-class _ChatBubble extends StatelessWidget {
-  const _ChatBubble({required this.message});
-
-  final _ChatMessage message;
-
-  @override
-  Widget build(BuildContext context) {
-    final bubbleColor = message.outgoing
-        ? Colors.blue.shade600
-        : Colors.grey.shade200;
-    final textColor = message.outgoing ? Colors.white : Colors.black87;
-
-    return Align(
-      alignment: message.outgoing
-          ? Alignment.centerRight
-          : Alignment.centerLeft,
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 320),
-        child: Container(
-          padding: const EdgeInsets.all(14),
-          decoration: BoxDecoration(
-            color: bubbleColor,
-            borderRadius: BorderRadius.only(
-              topLeft: const Radius.circular(18),
-              topRight: const Radius.circular(18),
-              bottomLeft: Radius.circular(message.outgoing ? 18 : 6),
-              bottomRight: Radius.circular(message.outgoing ? 6 : 18),
-            ),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: <Widget>[
-              Text(
-                message.label,
-                style: TextStyle(
-                  color: textColor.withValues(alpha: 0.85),
-                  fontSize: 12,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-              const SizedBox(height: 6),
-              Text(
-                message.text,
-                style: TextStyle(color: textColor, height: 1.3),
-              ),
-              const SizedBox(height: 8),
-              Align(
-                alignment: Alignment.bottomRight,
-                child: Text(
-                  message.time,
-                  style: TextStyle(
-                    color: textColor.withValues(alpha: 0.75),
-                    fontSize: 11,
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _ComposerCard extends StatelessWidget {
-  const _ComposerCard({
-    required this.controller,
-    required this.enabled,
-    required this.hintText,
-    required this.buttonLabel,
-    required this.onSend,
-  });
-
-  final TextEditingController controller;
-  final bool enabled;
-  final String hintText;
-  final String buttonLabel;
-  final VoidCallback? onSend;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(20),
-        boxShadow: <BoxShadow>[
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.05),
-            blurRadius: 18,
-            offset: const Offset(0, 8),
-          ),
-        ],
-      ),
-      child: Row(
-        children: <Widget>[
-          Expanded(
-            child: TextField(
-              controller: controller,
-              enabled: enabled,
-              textInputAction: TextInputAction.send,
-              onSubmitted: (_) => onSend?.call(),
-              decoration: InputDecoration(
-                hintText: hintText,
-                border: InputBorder.none,
-              ),
-            ),
-          ),
-          const SizedBox(width: 8),
-          FilledButton(
-            onPressed: onSend,
-            child: Text(buttonLabel),
-          ),
-        ],
       ),
     );
   }
