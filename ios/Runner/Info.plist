@@ -55,6 +55,8 @@
 	<string>Main</string>
 	<key>NSBluetoothAlwaysUsageDescription</key>
     <string>We need Bluetooth access</string>
+	<key>NSBluetoothPeripheralUsageDescription</key>
+	<string>We use Bluetooth to advertise this device as a BLE peripheral.</string>
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
