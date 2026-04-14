@@ -108,29 +108,29 @@ class _ServerPageState extends State<ServerPage> {
       );
     });
 
-    _writeRequestSubscription = _peripheral.characteristicWriteRequested.listen((
-      event,
-    ) async {
-      if (event.characteristic.uuid != kBleJsonCharacteristicUuid) {
+    _writeRequestSubscription = _peripheral.characteristicWriteRequested.listen(
+      (event) async {
+        if (event.characteristic.uuid != kBleJsonCharacteristicUuid) {
+          await _peripheral.respondWriteRequest(event.request);
+          return;
+        }
+
+        _lastPayload = Uint8List.fromList(event.request.value);
         await _peripheral.respondWriteRequest(event.request);
-        return;
-      }
 
-      _lastPayload = Uint8List.fromList(event.request.value);
-      await _peripheral.respondWriteRequest(event.request);
+        final raw = utf8.decode(event.request.value, allowMalformed: true);
+        final data = ChatData.fromRaw(raw, fallbackSender: 'Client');
 
-      final raw = utf8.decode(event.request.value, allowMalformed: true);
-      final data = ChatData.fromRaw(raw, fallbackSender: 'Client');
+        if (!mounted) {
+          return;
+        }
 
-      if (!mounted) {
-        return;
-      }
-
-      setState(() {
-        _messages.insert(0, data);
-        _status = 'Received JSON from client';
-      });
-    });
+        setState(() {
+          _messages.insert(0, data);
+          _status = 'Received JSON from client';
+        });
+      },
+    );
 
     _notifyStateSubscription = _peripheral.characteristicNotifyStateChanged
         .listen((event) async {
@@ -213,10 +213,7 @@ class _ServerPageState extends State<ServerPage> {
       _characteristic = char;
       _advertising = true;
       _status = 'Advertising as $kBleJsonServerName';
-      _messages.insert(
-        0,
-        ChatData(message: 'Server ready', sender: 'System'),
-      );
+      _messages.insert(0, ChatData(message: 'Server ready', sender: 'System'));
     });
   }
 
@@ -314,10 +311,7 @@ class _ServerPageState extends State<ServerPage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: <Widget>[
-                  Text(
-                    _status,
-                    style: Theme.of(context).textTheme.bodyLarge,
-                  ),
+                  Text(_status, style: Theme.of(context).textTheme.bodyLarge),
                   const SizedBox(height: 8),
                   Text(
                     'Subscribers: ${_subscribedCentrals.length}',
@@ -347,7 +341,7 @@ class _ServerPageState extends State<ServerPage> {
                   : ListView.separated(
                       reverse: true,
                       itemCount: _messages.length,
-                      separatorBuilder: (_, __) => const SizedBox(height: 10),
+                      separatorBuilder: (_, _) => const SizedBox(height: 10),
                       itemBuilder: (context, index) {
                         final item = _messages[index];
                         return _MessageTile(data: item);
@@ -380,9 +374,9 @@ class _MessageTile extends StatelessWidget {
         children: <Widget>[
           Text(
             data.sender,
-            style: Theme.of(context).textTheme.titleSmall?.copyWith(
-              fontWeight: FontWeight.w700,
-            ),
+            style: Theme.of(
+              context,
+            ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700),
           ),
           const SizedBox(height: 6),
           Text(data.message),

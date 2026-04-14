@@ -29,7 +29,8 @@ class _ClientChatPageState extends State<ClientChatPage> {
   final StreamController<List<ChatData>> _messagesStreamController =
       StreamController<List<ChatData>>.broadcast();
 
-  StreamSubscription<GATTCharacteristicNotifiedEventArgs>? _notifiedSubscription;
+  StreamSubscription<GATTCharacteristicNotifiedEventArgs>?
+  _notifiedSubscription;
   StreamSubscription<PeripheralConnectionStateChangedEventArgs>?
   _connectionSubscription;
 
@@ -44,29 +45,29 @@ class _ClientChatPageState extends State<ClientChatPage> {
   }
 
   void _listenForUpdates() {
-    _notifiedSubscription = widget.centralManager.characteristicNotified.listen((
-      event,
-    ) {
-      if (event.characteristic.uuid != widget.characteristic.uuid || !mounted) {
-        return;
-      }
+    _notifiedSubscription = widget.centralManager.characteristicNotified.listen(
+      (event) {
+        if (event.characteristic.uuid != widget.characteristic.uuid ||
+            !mounted) {
+          return;
+        }
 
-      _appendIncoming(event.value);
-    });
+        _appendIncoming(event.value);
+      },
+    );
 
-    _connectionSubscription = widget.centralManager.connectionStateChanged.listen((
-      event,
-    ) {
-      if (event.peripheral != widget.peripheral || !mounted) {
-        return;
-      }
+    _connectionSubscription = widget.centralManager.connectionStateChanged
+        .listen((event) {
+          if (event.peripheral != widget.peripheral || !mounted) {
+            return;
+          }
 
-      setState(() {
-        _status = event.state == ConnectionState.connected
-            ? 'Connected with real-time JSON updates'
-            : 'Disconnected from server';
-      });
-    });
+          setState(() {
+            _status = event.state == ConnectionState.connected
+                ? 'Connected with real-time JSON updates'
+                : 'Disconnected from server';
+          });
+        });
   }
 
   Future<void> _enableRealtimeUpdates() async {
@@ -115,7 +116,8 @@ class _ClientChatPageState extends State<ClientChatPage> {
     final chat = ChatData.fromRaw(raw, fallbackSender: 'Client');
     final bytes = Uint8List.fromList(utf8.encode(jsonEncode(chat.toJson())));
 
-    final type = widget.characteristic.properties.contains(
+    final type =
+        widget.characteristic.properties.contains(
           GATTCharacteristicProperty.writeWithoutResponse,
         )
         ? GATTCharacteristicWriteType.withoutResponse
@@ -213,7 +215,7 @@ class _ClientChatPageState extends State<ClientChatPage> {
                   return ListView.separated(
                     reverse: true,
                     itemCount: items.length,
-                    separatorBuilder: (_, __) => const SizedBox(height: 10),
+                    separatorBuilder: (_, _) => const SizedBox(height: 10),
                     itemBuilder: (context, index) {
                       final item = items[index];
                       return Container(
@@ -221,9 +223,7 @@ class _ClientChatPageState extends State<ClientChatPage> {
                         decoration: BoxDecoration(
                           color: const Color(0xFFF8FAFC),
                           borderRadius: BorderRadius.circular(12),
-                          border: Border.all(
-                            color: const Color(0xFFE2E8F0),
-                          ),
+                          border: Border.all(color: const Color(0xFFE2E8F0)),
                         ),
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
@@ -231,9 +231,7 @@ class _ClientChatPageState extends State<ClientChatPage> {
                             Text(
                               item.sender,
                               style: Theme.of(context).textTheme.titleSmall
-                                  ?.copyWith(
-                                    fontWeight: FontWeight.w700,
-                                  ),
+                                  ?.copyWith(fontWeight: FontWeight.w700),
                             ),
                             const SizedBox(height: 6),
                             Text(item.message),

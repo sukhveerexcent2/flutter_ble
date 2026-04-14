@@ -10,6 +10,8 @@ class ComposerCard extends StatelessWidget {
     this.showButton = true,
     this.onChanged,
     this.onAttach,
+    this.progress,
+    this.progressLabel,
     super.key,
   });
 
@@ -21,6 +23,8 @@ class ComposerCard extends StatelessWidget {
   final VoidCallback? onSend;
   final bool showButton;
   final VoidCallback? onAttach;
+  final double? progress;
+  final String? progressLabel;
 
   @override
   Widget build(BuildContext context) {
@@ -31,33 +35,63 @@ class ComposerCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(14),
         border: Border.all(color: const Color(0xFFE2E8F0)),
       ),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: <Widget>[
-          IconButton(
-            onPressed: enabled ? onAttach : null,
-            icon: const Icon(Icons.add),
-            tooltip: 'Select JSON file',
-          ),
-          Expanded(
-            child: TextField(
-              controller: controller,
-              enabled: enabled,
-              minLines: 1,
-              maxLines: 6,
-              onChanged: onChanged,
-              textInputAction: TextInputAction.send,
-              onSubmitted: (_) => onSend?.call(),
-              decoration: InputDecoration(
-                hintText: hintText,
-                border: InputBorder.none,
+          Row(
+            children: <Widget>[
+              IconButton(
+                onPressed: enabled ? onAttach : null,
+                icon: const Icon(Icons.add),
+                tooltip: 'Select JSON file',
               ),
-            ),
+              Expanded(
+                child: TextField(
+                  controller: controller,
+                  enabled: enabled,
+                  minLines: 1,
+                  maxLines: 6,
+                  onChanged: onChanged,
+                  textInputAction: TextInputAction.send,
+                  onSubmitted: enabled ? (_) => onSend?.call() : null,
+                  decoration: InputDecoration(
+                    hintText: hintText,
+                    border: InputBorder.none,
+                  ),
+                ),
+              ),
+              if (showButton) ...<Widget>[
+                const SizedBox(width: 8),
+                FilledButton(
+                  onPressed: enabled ? onSend : null,
+                  child: Text(buttonLabel),
+                ),
+              ],
+            ],
           ),
-          if (showButton) ...<Widget>[
-            const SizedBox(width: 8),
-            FilledButton(
-              onPressed: onSend,
-              child: Text(buttonLabel),
+          if (progress != null) ...<Widget>[
+            const SizedBox(height: 8),
+            Row(
+              children: <Widget>[
+                Expanded(
+                  child: Text(
+                    progressLabel ?? 'Sending JSON file',
+                    style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                      color: const Color(0xFF334155),
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: LinearProgressIndicator(
+                value: progress!.clamp(0, 1).toDouble(),
+                minHeight: 8,
+                backgroundColor: const Color(0xFFE2E8F0),
+              ),
             ),
           ],
         ],

@@ -36,9 +36,9 @@ class HeaderCard extends StatelessWidget {
             children: <Widget>[
               Text(
                 '$mode Mode',
-                style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.w700,
-                ),
+                style: Theme.of(
+                  context,
+                ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
               ),
               const Spacer(),
               MiniBadge(
@@ -59,9 +59,9 @@ class HeaderCard extends StatelessWidget {
           const SizedBox(height: 10),
           Text(
             status,
-            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-              color: const Color(0xFF64748B),
-            ),
+            style: Theme.of(
+              context,
+            ).textTheme.bodyMedium?.copyWith(color: const Color(0xFF64748B)),
           ),
         ],
       ),

@@ -20,10 +20,7 @@ class ChatData {
     );
   }
 
-  factory ChatData.fromRaw(
-    String raw, {
-    String fallbackSender = 'Unknown',
-  }) {
+  factory ChatData.fromRaw(String raw, {String fallbackSender = 'Unknown'}) {
     try {
       final dynamic decoded = jsonDecode(raw);
       if (decoded is Map<String, dynamic>) {
@@ -36,9 +33,6 @@ class ChatData {
       // Fallback to plain text below.
     }
 
-    return ChatData(
-      message: raw,
-      sender: fallbackSender,
-    );
+    return ChatData(message: raw, sender: fallbackSender);
   }
 }

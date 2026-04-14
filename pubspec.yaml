@@ -18,6 +18,7 @@ dependencies:
   device_info_plus: ^12.4.0
   bluetooth_low_energy: ^6.2.1
   file_picker: ^8.0.7
+  flutter_reactive_ble: ^5.4.2
 dev_dependencies:
   flutter_test:
     sdk: flutter

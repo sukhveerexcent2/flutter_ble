@@ -1,0 +1,17 @@
+[
+  {
+    "sender": "Phone A",
+    "message": "Hello from JSON file",
+    "type": "chat"
+  },
+  {
+    "sender": "Phone A",
+    "message": "This is the second BLE JSON payload",
+    "type": "chat"
+  },
+  {
+    "sender": "Phone A",
+    "message": "BLE sends this file item by item with console logs",
+    "type": "status"
+  }
+]

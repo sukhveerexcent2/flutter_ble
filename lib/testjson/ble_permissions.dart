@@ -22,7 +22,5 @@ Future<bool> requestBlePermissions({required bool includeAdvertise}) async {
   }
 
   final result = await permissions.request();
-  return result.values.every(
-    (status) => status.isGranted || status.isLimited,
-  );
+  return result.values.every((status) => status.isGranted || status.isLimited);
 }

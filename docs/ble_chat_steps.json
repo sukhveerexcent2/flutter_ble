@@ -1,0 +1,115 @@
+{
+  "project": "flutter_ble",
+  "feature": "phone_to_phone_ble_realtime_chat",
+  "serverName": "Flutter_Server",
+  "serviceUuid": "6E400001-B5A3-F393-E0A9-E50E24DCCA9E",
+  "characteristicUuid": "6E400002-B5A3-F393-E0A9-E50E24DCCA9E",
+  "roles": {
+    "server": {
+      "bleRole": "peripheral",
+      "uiButton": "Be Server",
+      "responsibility": "Advertise the BLE service, receive writes, notify subscribed clients"
+    },
+    "client": {
+      "bleRole": "central",
+      "uiButton": "Be Client",
+      "responsibility": "Scan, connect, subscribe to notifications, write chat messages"
+    }
+  },
+  "steps": [
+    {
+      "step": 1,
+      "name": "Request permissions",
+      "server": ["BLUETOOTH_CONNECT", "BLUETOOTH_SCAN", "BLUETOOTH_ADVERTISE"],
+      "client": ["BLUETOOTH_CONNECT", "BLUETOOTH_SCAN"]
+    },
+    {
+      "step": 2,
+      "name": "Start server advertising",
+      "codeEntry": "PhoneToPhoneBlePage.startServer",
+      "result": "Phone advertises Flutter_Server with the shared service UUID"
+    },
+    {
+      "step": 3,
+      "name": "Start client scan",
+      "codeEntry": "PhoneToPhoneBlePage.startClientScan",
+      "result": "Client filters discovered devices by service UUID or server name"
+    },
+    {
+      "step": 4,
+      "name": "Connect to server",
+      "codeEntry": "PhoneToPhoneBlePage.connectToServer",
+      "result": "Client connects to the selected peripheral"
+    },
+    {
+      "step": 5,
+      "name": "Discover chat characteristic",
+      "codeEntry": "PhoneToPhoneBlePage._discoverChatCharacteristic",
+      "result": "Client finds the read/write/notify characteristic"
+    },
+    {
+      "step": 6,
+      "name": "Enable realtime updates",
+      "codeEntry": "PhoneToPhoneBlePage._enableRealtimeUpdates",
+      "result": "Client subscribes to BLE notifications"
+    },
+    {
+      "step": 7,
+      "name": "Send chat text",
+      "codeEntry": "PhoneToPhoneBlePage.sendMessage",
+      "result": "Client chunks text and writes it to the server characteristic"
+    },
+    {
+      "step": 8,
+      "name": "Receive and notify",
+      "codeEntry": "PhoneToPhoneBlePage._listenToManagers",
+      "result": "Server rebuilds the stream, stores the latest value, and notifies subscribers"
+    },
+    {
+      "step": 9,
+      "name": "Send JSON file",
+      "codeEntry": "PhoneToPhoneBlePage._pickAndSendJsonFile",
+      "result": "JSON objects or array items are sent as BLE payloads with console logs"
+    },
+    {
+      "step": 10,
+      "name": "Stop session",
+      "codeEntry": "PhoneToPhoneBlePage.stopAll",
+      "result": "Scanning, advertising, and connections are stopped"
+    }
+  ],
+  "payloadProtocol": {
+    "encoding": "utf8",
+    "chunkSizeBytes": 160,
+    "maxPayloadBytes": 512000,
+    "frameStartByte": "0x02",
+    "frameEndByte": "0x03",
+    "flow": ["start_frame", "payload_chunk_1", "payload_chunk_n", "end_frame"]
+  },
+  "jsonFileShapes": [
+    {
+      "type": "array",
+      "example": [{ "sender": "Phone A", "message": "Hello" }]
+    },
+    {
+      "type": "object_with_items",
+      "example": {
+        "items": [{ "sender": "Phone A", "message": "Hello" }]
+      }
+    },
+    {
+      "type": "single_object",
+      "example": { "sender": "Phone A", "message": "Hello" }
+    }
+  ],
+  "consoleLogFields": [
+    "time",
+    "role",
+    "direction",
+    "bytes",
+    "chunk",
+    "batch",
+    "items",
+    "payload"
+  ]
+}

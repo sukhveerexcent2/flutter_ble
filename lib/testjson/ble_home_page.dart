@@ -38,9 +38,7 @@ class _BleHomePageState extends State<BleHomePage> {
               onPressed: () {
                 Navigator.push(
                   context,
-                  MaterialPageRoute<void>(
-                    builder: (_) => const ServerPage(),
-                  ),
+                  MaterialPageRoute<void>(builder: (_) => const ServerPage()),
                 );
               },
               child: const Text('Be Server'),
@@ -50,9 +48,7 @@ class _BleHomePageState extends State<BleHomePage> {
               onPressed: () {
                 Navigator.push(
                   context,
-                  MaterialPageRoute<void>(
-                    builder: (_) => const ClientPage(),
-                  ),
+                  MaterialPageRoute<void>(builder: (_) => const ClientPage()),
                 );
               },
               child: const Text('Be Client'),

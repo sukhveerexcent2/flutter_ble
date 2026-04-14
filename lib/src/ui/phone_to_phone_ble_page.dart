@@ -28,10 +28,14 @@ class PhoneToPhoneBlePage extends StatefulWidget {
 
 class _PhoneToPhoneBlePageState extends State<PhoneToPhoneBlePage> {
   static const String _serverName = 'Flutter_Server';
-  static const int _payloadChunkSize = 160;
-  static const int _maxStreamBytes = 500 * 1024;
+  static const int _payloadChunkSize = 1101;
+  static const int _fallbackPayloadChunkSize = 10;
+  static const int _maxStreamBytes = 2 * 1024 * 1024;
   static const int _frameStartByte = 0x02;
   static const int _frameEndByte = 0x03;
+  static const Duration _packetDelay = Duration(milliseconds: 4);
+  static const Duration _jsonItemDelay = Duration(milliseconds: 8);
+  static const Duration _jsonBatchDelay = Duration(milliseconds: 24);
 
   final CentralManager _centralManager = CentralManager();
   final PeripheralManager _peripheralManager = PeripheralManager();
@@ -71,6 +75,8 @@ class _PhoneToPhoneBlePageState extends State<PhoneToPhoneBlePage> {
   Timer? _serverInputDebounce;
   String _lastServerPayload = '';
   bool _sendingJsonFile = false;
+  double? _jsonSendProgress;
+  String? _jsonSendProgressLabel;
   Peripheral? _connectedPeripheral;
   GATTCharacteristic? _chatCharacteristic;
   GATTCharacteristic? _serverCharacteristic;
@@ -152,6 +158,67 @@ class _PhoneToPhoneBlePageState extends State<PhoneToPhoneBlePage> {
     return '${normalized.substring(0, maxChars)}...';
   }
 
+  bool _shouldLogChunk(int index, int totalChunks) {
+    if (totalChunks <= 20) {
+      return true;
+    }
+    return index == 0 || index == totalChunks - 1 || (index + 1) % 50 == 0;
+  }
+
+  void _printFullJsonPayload({
+    required String action,
+    required String role,
+    required String direction,
+    required String payload,
+  }) {
+    const int consoleChunkSize = 3000;
+    final bytes = utf8.encode(payload).length;
+    final totalParts = payload.isEmpty
+        ? 1
+        : ((payload.length - 1) ~/ consoleChunkSize) + 1;
+
+    _logBleEvent(
+      action,
+      role: role,
+      direction: direction,
+      bytes: bytes,
+      extra: <String, Object?>{
+        'chars': payload.length,
+        'consoleParts': totalParts,
+      },
+    );
+
+    for (int index = 0; index < payload.length; index += consoleChunkSize) {
+      final end = (index + consoleChunkSize < payload.length)
+          ? index + consoleChunkSize
+          : payload.length;
+      final part = (index ~/ consoleChunkSize) + 1;
+      final message =
+          '[BLE_JSON_FULL] $action | role=$role | direction=$direction | '
+          'part=$part/$totalParts\n${payload.substring(index, end)}';
+      debugPrint(message);
+      log(message, name: 'BLE_JSON_CHAT');
+    }
+  }
+
+  void _setJsonSendProgress(double progress, String detail) {
+    final clampedProgress = progress.clamp(0, 1).toDouble();
+    final percent = (clampedProgress * 100).round();
+    final label = '$detail - $percent%';
+
+    if (!mounted) {
+      _jsonSendProgress = clampedProgress;
+      _jsonSendProgressLabel = label;
+      return;
+    }
+
+    setState(() {
+      _jsonSendProgress = clampedProgress;
+      _jsonSendProgressLabel = label;
+      _status = label;
+    });
+  }
+
   void _logBleEvent(
     String action, {
     String? role,
@@ -211,7 +278,7 @@ class _PhoneToPhoneBlePageState extends State<PhoneToPhoneBlePage> {
       event,
     ) async {
       if (event.state == BluetoothLowEnergyState.unauthorized &&
-             Platform.isAndroid) {
+          Platform.isAndroid) {
         await _centralManager.authorize();
       }
       if (!mounted) {
@@ -289,6 +356,9 @@ class _PhoneToPhoneBlePageState extends State<PhoneToPhoneBlePage> {
           _connectedPeripheral = null;
           _chatCharacteristic = null;
           _subscribed = false;
+          _sendingJsonFile = false;
+          _jsonSendProgress = null;
+          _jsonSendProgressLabel = null;
           _status = 'Disconnected';
         });
       }
@@ -301,13 +371,19 @@ class _PhoneToPhoneBlePageState extends State<PhoneToPhoneBlePage> {
         return;
       }
 
-      _logBleEvent(
-        'notification received',
-        role: 'client',
-        direction: 'receive',
-        payload: utf8.decode(event.value, allowMalformed: true),
-        bytes: event.value.length,
-      );
+      final wasReceivingChunks = _clientReceivingChunks;
+      final isFrame = _isStartFrame(event.value) || _isEndFrame(event.value);
+      if (isFrame || !wasReceivingChunks) {
+        _logBleEvent(
+          'notification received',
+          role: 'client',
+          direction: 'receive',
+          payload: isFrame
+              ? null
+              : utf8.decode(event.value, allowMalformed: true),
+          bytes: event.value.length,
+        );
+      }
       final text = _consumeIncomingPacket(
         event.value,
         buffer: _clientReceiveBuffer,
@@ -318,6 +394,14 @@ class _PhoneToPhoneBlePageState extends State<PhoneToPhoneBlePage> {
         return;
       }
       final textBytes = utf8.encode(text).length;
+      if (_isJsonPayload(text)) {
+        _printFullJsonPayload(
+          action: 'full json received',
+          role: 'client',
+          direction: 'receive',
+          payload: text,
+        );
+      }
       setState(() {
         _upsertMessage('Notification', text, outgoing: false);
         _status = 'Stream received: ${_formatBytes(textBytes)}';
@@ -353,9 +437,7 @@ class _PhoneToPhoneBlePageState extends State<PhoneToPhoneBlePage> {
             direction: 'send',
             payload: utf8.decode(_characteristicValue, allowMalformed: true),
             bytes: _characteristicValue.length,
-            extra: <String, Object?>{
-              'offset': offset,
-            },
+            extra: <String, Object?>{'offset': offset},
           );
 
           if (!mounted) {
@@ -380,16 +462,22 @@ class _PhoneToPhoneBlePageState extends State<PhoneToPhoneBlePage> {
           }
 
           await _peripheralManager.respondWriteRequest(event.request);
-          _logBleEvent(
-            'write request received',
-            role: 'server',
-            direction: 'receive',
-            payload: utf8.decode(event.request.value, allowMalformed: true),
-            bytes: event.request.value.length,
-            extra: <String, Object?>{
-              'central': event.central.uuid,
-            },
-          );
+          final wasReceivingChunks = _serverReceivingChunks;
+          final isFrame =
+              _isStartFrame(event.request.value) ||
+              _isEndFrame(event.request.value);
+          if (isFrame || !wasReceivingChunks) {
+            _logBleEvent(
+              'write request received',
+              role: 'server',
+              direction: 'receive',
+              payload: isFrame
+                  ? null
+                  : utf8.decode(event.request.value, allowMalformed: true),
+              bytes: event.request.value.length,
+              extra: <String, Object?>{'central': event.central.uuid},
+            );
+          }
           final text = _consumeIncomingPacket(
             event.request.value,
             buffer: _serverReceiveBuffer,
@@ -405,6 +493,14 @@ class _PhoneToPhoneBlePageState extends State<PhoneToPhoneBlePage> {
             return;
           }
           final textBytes = utf8.encode(text).length;
+          if (_isJsonPayload(text)) {
+            _printFullJsonPayload(
+              action: 'full json received',
+              role: 'server',
+              direction: 'receive',
+              payload: text,
+            );
+          }
           setState(() {
             _appendMessage('Received', text, outgoing: false);
             _status = 'Server received stream: ${_formatBytes(textBytes)}';
@@ -580,6 +676,9 @@ class _PhoneToPhoneBlePageState extends State<PhoneToPhoneBlePage> {
       _serverReceiveBuffer.clear();
       _clientReceivingChunks = false;
       _serverReceivingChunks = false;
+      _sendingJsonFile = false;
+      _jsonSendProgress = null;
+      _jsonSendProgressLabel = null;
     });
   }
 
@@ -618,6 +717,9 @@ class _PhoneToPhoneBlePageState extends State<PhoneToPhoneBlePage> {
       _serverReceiveBuffer.clear();
       _clientReceivingChunks = false;
       _serverReceivingChunks = false;
+      _sendingJsonFile = false;
+      _jsonSendProgress = null;
+      _jsonSendProgressLabel = null;
     });
 
     await _centralManager.startDiscovery(serviceUUIDs: <UUID>[_serviceUuid]);
@@ -641,7 +743,7 @@ class _PhoneToPhoneBlePageState extends State<PhoneToPhoneBlePage> {
   Future<void> _discoverChatCharacteristic(Peripheral peripheral) async {
     try {
       if (Platform.isAndroid) {
-        await _centralManager.requestMTU(peripheral, mtu: 180);
+        await _centralManager.requestMTU(peripheral, mtu: 247);
       }
     } catch (e, s) {
       log("error $e , line $s");
@@ -739,9 +841,7 @@ class _PhoneToPhoneBlePageState extends State<PhoneToPhoneBlePage> {
       direction: 'receive',
       payload: initialText,
       bytes: initialValue.length,
-      extra: <String, Object?>{
-        'source': peripheral.uuid,
-      },
+      extra: <String, Object?>{'source': peripheral.uuid},
     );
 
     if (!mounted) {
@@ -765,6 +865,7 @@ class _PhoneToPhoneBlePageState extends State<PhoneToPhoneBlePage> {
   Future<void> _publishServerText(
     String text, {
     required bool clearComposer,
+    ValueChanged<double>? onProgress,
   }) async {
     if (text.isEmpty) {
       return;
@@ -782,7 +883,10 @@ class _PhoneToPhoneBlePageState extends State<PhoneToPhoneBlePage> {
         'chunkSize': _payloadChunkSize,
       },
     );
-    await _notifySubscribedCentrals(_characteristicValue);
+    await _notifySubscribedCentrals(
+      _characteristicValue,
+      onProgress: onProgress,
+    );
 
     if (!mounted) {
       return;
@@ -794,7 +898,9 @@ class _PhoneToPhoneBlePageState extends State<PhoneToPhoneBlePage> {
       if (clearComposer) {
         _messageController.clear();
       }
-      _status = 'Server value updated in real time';
+      _status = onProgress == null
+          ? 'Server value updated in real time'
+          : _jsonSendProgressLabel ?? 'Sending JSON file';
     });
   }
 
@@ -809,10 +915,13 @@ class _PhoneToPhoneBlePageState extends State<PhoneToPhoneBlePage> {
         'json file skipped',
         role: _actingAsServer ? 'server' : 'client',
         direction: 'system',
-        extra: const <String, Object?>{
-          'reason': 'already sending',
-        },
+        extra: const <String, Object?>{'reason': 'already sending'},
       );
+      if (mounted) {
+        setState(() {
+          _status = _jsonSendProgressLabel ?? 'Already sending JSON file';
+        });
+      }
       return;
     }
 
@@ -821,12 +930,11 @@ class _PhoneToPhoneBlePageState extends State<PhoneToPhoneBlePage> {
         'json file blocked',
         role: 'server',
         direction: 'system',
-        extra: const <String, Object?>{
-          'reason': 'no subscribed client',
-        },
+        extra: const <String, Object?>{'reason': 'no subscribed client'},
       );
       setState(() {
-        _status = 'Wait for the second phone to show Subscribed before sending a JSON file';
+        _status =
+            'Wait for the second phone to show Subscribed before sending a JSON file';
       });
       return;
     }
@@ -837,9 +945,7 @@ class _PhoneToPhoneBlePageState extends State<PhoneToPhoneBlePage> {
         'json file blocked',
         role: 'client',
         direction: 'system',
-        extra: const <String, Object?>{
-          'reason': 'client not connected',
-        },
+        extra: const <String, Object?>{'reason': 'client not connected'},
       );
       setState(() {
         _status = 'Connect first before sending a JSON file';
@@ -868,9 +974,7 @@ class _PhoneToPhoneBlePageState extends State<PhoneToPhoneBlePage> {
         'json file selected',
         role: _actingAsServer ? 'server' : 'client',
         direction: 'system',
-        extra: <String, Object?>{
-          'path': path,
-        },
+        extra: <String, Object?>{'path': path},
       );
       final raw = await File(path).readAsString();
       final rawBytes = utf8.encode(raw).length;
@@ -878,10 +982,7 @@ class _PhoneToPhoneBlePageState extends State<PhoneToPhoneBlePage> {
         'json file loaded',
         role: _actingAsServer ? 'server' : 'client',
         direction: 'system',
-        extra: <String, Object?>{
-          'chars': raw.length,
-          'bytes': rawBytes,
-        },
+        extra: <String, Object?>{'chars': raw.length, 'bytes': rawBytes},
       );
 
       if (!mounted) {
@@ -895,36 +996,79 @@ class _PhoneToPhoneBlePageState extends State<PhoneToPhoneBlePage> {
         return;
       }
 
-      if (rawBytes > _maxStreamBytes) {
-        setState(() {
-          _status =
-              'File too large for one stream. Max ${_formatBytes(_maxStreamBytes)}';
-        });
+      List<dynamic> items;
+      try {
+        final decoded = _isJsonPayload(raw)
+            ? _decodeJsonContent(raw)
+            : raw.trim();
+        items = _extractJsonItems(decoded);
+      } on FormatException catch (error) {
+        items = _extractRawTextItems(raw);
         _logBleEvent(
-          'json stream blocked',
+          'json lines fallback',
           role: _actingAsServer ? 'server' : 'client',
           direction: 'system',
           extra: <String, Object?>{
-            'reason': 'file too large',
-            'bytes': rawBytes,
-            'limit': _maxStreamBytes,
+            'reason': error.message,
+            'items': items.length,
           },
         );
+      }
+
+      if (items.isEmpty) {
+        setState(() {
+          _status = 'No sendable JSON item found in this file';
+        });
         return;
       }
 
-      await _sendTextStream(
-        raw,
-        sourceLabel: 'JSON file',
-      );
+      if (rawBytes <= _maxStreamBytes) {
+        await _sendTextStream(raw, sourceLabel: 'JSON file');
+        _printFullJsonPayload(
+          action: 'full json file sent successfully',
+          role: _actingAsServer ? 'server' : 'client',
+          direction: 'send',
+          payload: raw,
+        );
+      } else if (items.length == 1) {
+        final payload = items.single is String
+            ? items.single as String
+            : jsonEncode(items.single);
+        if (utf8.encode(payload).length > _maxStreamBytes) {
+          setState(() {
+            _status =
+                'JSON payload too large. Max ${_formatBytes(_maxStreamBytes)}';
+          });
+          return;
+        }
+        await _sendTextStream(payload, sourceLabel: 'JSON file');
+        _printFullJsonPayload(
+          action: 'full json file sent successfully',
+          role: _actingAsServer ? 'server' : 'client',
+          direction: 'send',
+          payload: raw,
+        );
+      } else {
+        _logBleEvent(
+          'json file parsed',
+          role: _actingAsServer ? 'server' : 'client',
+          direction: 'system',
+          extra: <String, Object?>{'items': items.length},
+        );
+        await _sendJsonItemsInSteps(items);
+        _printFullJsonPayload(
+          action: 'full json file sent successfully',
+          role: _actingAsServer ? 'server' : 'client',
+          direction: 'send',
+          payload: raw,
+        );
+      }
     } catch (e, s) {
       _logBleEvent(
         'json file send error',
         role: _actingAsServer ? 'server' : 'client',
         direction: 'system',
-        extra: <String, Object?>{
-          'error': e,
-        },
+        extra: <String, Object?>{'error': e},
       );
       log('JSON file send error', error: e, stackTrace: s);
       if (!mounted) {
@@ -945,10 +1089,14 @@ class _PhoneToPhoneBlePageState extends State<PhoneToPhoneBlePage> {
     if (mounted) {
       setState(() {
         _sendingJsonFile = true;
+        _jsonSendProgress = 0;
+        _jsonSendProgressLabel = 'Streaming $sourceLabel - 0%';
         _status = 'Streaming $sourceLabel: ${_formatBytes(bytes)}';
       });
     } else {
       _sendingJsonFile = true;
+      _jsonSendProgress = 0;
+      _jsonSendProgressLabel = 'Streaming $sourceLabel - 0%';
     }
 
     _logBleEvent(
@@ -963,31 +1111,38 @@ class _PhoneToPhoneBlePageState extends State<PhoneToPhoneBlePage> {
     );
 
     try {
-      await _sendSinglePayloadText(text);
+      await _sendSinglePayloadText(
+        text,
+        onProgress: (progress) =>
+            _setJsonSendProgress(progress, 'Streaming $sourceLabel'),
+      );
 
       if (!mounted) {
         return;
       }
 
       setState(() {
+        _jsonSendProgress = 1;
+        _jsonSendProgressLabel = 'Completed $sourceLabel - 100%';
         _status = 'Completed $sourceLabel stream: ${_formatBytes(bytes)}';
       });
       _logBleEvent(
         'stream completed',
         role: _actingAsServer ? 'server' : 'client',
         direction: 'send',
-        extra: <String, Object?>{
-          'source': sourceLabel,
-          'bytes': bytes,
-        },
+        extra: <String, Object?>{'source': sourceLabel, 'bytes': bytes},
       );
     } finally {
       if (mounted) {
         setState(() {
           _sendingJsonFile = false;
+          _jsonSendProgress = null;
+          _jsonSendProgressLabel = null;
         });
       } else {
         _sendingJsonFile = false;
+        _jsonSendProgress = null;
+        _jsonSendProgressLabel = null;
       }
     }
   }
@@ -1055,9 +1210,7 @@ class _PhoneToPhoneBlePageState extends State<PhoneToPhoneBlePage> {
           'json decode retry',
           role: _actingAsServer ? 'server' : 'client',
           direction: 'system',
-          extra: const <String, Object?>{
-            'reason': 'sanitized content',
-          },
+          extra: const <String, Object?>{'reason': 'sanitized content'},
         );
         return jsonDecode(sanitized);
       }
@@ -1075,10 +1228,7 @@ class _PhoneToPhoneBlePageState extends State<PhoneToPhoneBlePage> {
     }
 
     // Remove trailing commas before closing object/array brackets.
-    sanitized = sanitized.replaceAll(
-      RegExp(r',(\s*[\]}])'),
-      r'$1',
-    );
+    sanitized = sanitized.replaceAll(RegExp(r',(\s*[\]}])'), r'$1');
 
     return sanitized;
   }
@@ -1088,22 +1238,25 @@ class _PhoneToPhoneBlePageState extends State<PhoneToPhoneBlePage> {
 
     setState(() {
       _sendingJsonFile = true;
+      _jsonSendProgress = 0;
+      _jsonSendProgressLabel = 'Sending JSON file - 0%';
       _status = 'Loaded ${items.length} JSON item(s)';
     });
     _logBleEvent(
       'json file send started',
       role: _actingAsServer ? 'server' : 'client',
       direction: 'send',
-      extra: <String, Object?>{
-        'items': items.length,
-        'batchSize': batchSize,
-      },
+      extra: <String, Object?>{'items': items.length, 'batchSize': batchSize},
     );
 
     try {
       final totalBatches = (items.length / batchSize).ceil();
 
-      for (int batchStart = 0; batchStart < items.length; batchStart += batchSize) {
+      for (
+        int batchStart = 0;
+        batchStart < items.length;
+        batchStart += batchSize
+      ) {
         final batchIndex = (batchStart ~/ batchSize) + 1;
         final batchItems = items.skip(batchStart).take(batchSize).toList();
         _logBleEvent(
@@ -1119,19 +1272,31 @@ class _PhoneToPhoneBlePageState extends State<PhoneToPhoneBlePage> {
         for (int i = 0; i < batchItems.length; i++) {
           final item = batchItems[i];
           final payload = item is String ? item : jsonEncode(item);
+          final payloadBytes = utf8.encode(payload).length;
+          final itemNumber = batchStart + i + 1;
+          final progressBeforeItem = (itemNumber - 1) / items.length;
+          final progressPerItem = 1 / items.length;
 
-          await _sendSinglePayloadText(payload);
-
-          if (!mounted) {
-            return;
+          if (payloadBytes > _maxStreamBytes) {
+            throw StateError(
+              'JSON item $itemNumber is ${_formatBytes(payloadBytes)}. '
+              'Max ${_formatBytes(_maxStreamBytes)} per BLE payload.',
+            );
           }
 
-          setState(() {
-            _status =
-                'Sending JSON file batch $batchIndex/$totalBatches item ${i + 1}/${batchItems.length}';
-          });
+          _setJsonSendProgress(
+            progressBeforeItem,
+            'Sending JSON file item $itemNumber/${items.length}',
+          );
+          await _sendSinglePayloadText(
+            payload,
+            onProgress: (chunkProgress) => _setJsonSendProgress(
+              progressBeforeItem + (chunkProgress * progressPerItem),
+              'Sending JSON file item $itemNumber/${items.length}',
+            ),
+          );
 
-          await Future<void>.delayed(const Duration(milliseconds: 60));
+          await Future<void>.delayed(_jsonItemDelay);
         }
 
         _logBleEvent(
@@ -1140,9 +1305,10 @@ class _PhoneToPhoneBlePageState extends State<PhoneToPhoneBlePage> {
           direction: 'send',
           extra: <String, Object?>{
             'batch': '$batchIndex/$totalBatches',
+            'items': batchItems.length,
           },
         );
-        await Future<void>.delayed(const Duration(milliseconds: 220));
+        await Future<void>.delayed(_jsonBatchDelay);
       }
 
       if (!mounted) {
@@ -1150,24 +1316,22 @@ class _PhoneToPhoneBlePageState extends State<PhoneToPhoneBlePage> {
       }
 
       setState(() {
+        _jsonSendProgress = 1;
+        _jsonSendProgressLabel = 'Completed JSON file - 100%';
         _status = 'Completed JSON file send: ${items.length} item(s)';
       });
       _logBleEvent(
         'json file send completed',
         role: _actingAsServer ? 'server' : 'client',
         direction: 'send',
-        extra: <String, Object?>{
-          'items': items.length,
-        },
+        extra: <String, Object?>{'items': items.length},
       );
     } catch (e, s) {
       _logBleEvent(
         'json batch send failed',
         role: _actingAsServer ? 'server' : 'client',
         direction: 'system',
-        extra: <String, Object?>{
-          'error': e,
-        },
+        extra: <String, Object?>{'error': e},
       );
       log('JSON batch send failed', error: e, stackTrace: s);
       if (mounted) {
@@ -1180,16 +1344,27 @@ class _PhoneToPhoneBlePageState extends State<PhoneToPhoneBlePage> {
       if (mounted) {
         setState(() {
           _sendingJsonFile = false;
+          _jsonSendProgress = null;
+          _jsonSendProgressLabel = null;
         });
       } else {
         _sendingJsonFile = false;
+        _jsonSendProgress = null;
+        _jsonSendProgressLabel = null;
       }
     }
   }
 
-  Future<void> _sendSinglePayloadText(String text) async {
+  Future<void> _sendSinglePayloadText(
+    String text, {
+    ValueChanged<double>? onProgress,
+  }) async {
     if (_actingAsServer) {
-      await _publishServerText(text, clearComposer: false);
+      await _publishServerText(
+        text,
+        clearComposer: false,
+        onProgress: onProgress,
+      );
       return;
     }
 
@@ -1205,7 +1380,7 @@ class _PhoneToPhoneBlePageState extends State<PhoneToPhoneBlePage> {
       return;
     }
 
-    await _sendClientTextInChunks(text);
+    await _sendClientTextInChunks(text, onProgress: onProgress);
     _logBleEvent(
       'single payload sent',
       role: 'client',
@@ -1227,13 +1402,32 @@ class _PhoneToPhoneBlePageState extends State<PhoneToPhoneBlePage> {
     });
   }
 
-  Future<void> _notifySubscribedCentrals(Uint8List value) async {
-    for (final central in List<Central>.from(_subscribedCentrals)) {
-      await _notifySingleCentral(central, value);
+  Future<void> _notifySubscribedCentrals(
+    Uint8List value, {
+    ValueChanged<double>? onProgress,
+  }) async {
+    final centrals = List<Central>.from(_subscribedCentrals);
+    if (centrals.isEmpty) {
+      onProgress?.call(1);
+      return;
+    }
+    for (int index = 0; index < centrals.length; index++) {
+      final central = centrals[index];
+      await _notifySingleCentral(
+        central,
+        value,
+        onProgress: (centralProgress) {
+          onProgress?.call((index + centralProgress) / centrals.length);
+        },
+      );
     }
   }
 
-  Future<void> _sendClientTextInChunks(String text) async {
+  Future<void> _sendClientTextInChunks(
+    String text, {
+    ValueChanged<double>? onProgress,
+    int chunkSize = _payloadChunkSize,
+  }) async {
     final peripheral = _connectedPeripheral;
     final characteristic = _chatCharacteristic;
     if (peripheral == null || characteristic == null) {
@@ -1247,68 +1441,98 @@ class _PhoneToPhoneBlePageState extends State<PhoneToPhoneBlePage> {
         )
         ? GATTCharacteristicWriteType.withoutResponse
         : GATTCharacteristicWriteType.withResponse;
-    final chunks = _chunkBytes(data, _payloadChunkSize);
+    final chunks = _chunkBytes(data, chunkSize);
+    final totalWrites = chunks.length + 2;
 
-    await _centralManager.writeCharacteristic(
-      peripheral,
-      characteristic,
-      value: _startFrame(),
-      type: type,
-    );
-    _logBleEvent(
-      'client frame start sent',
-      role: 'client',
-      direction: 'send',
-      bytes: 1,
-      extra: <String, Object?>{
-        'target': peripheral.uuid,
-      },
-    );
-    await Future<void>.delayed(const Duration(milliseconds: 24));
-
-    for (int index = 0; index < chunks.length; index++) {
-      final chunk = chunks[index];
+    try {
       await _centralManager.writeCharacteristic(
         peripheral,
         characteristic,
-        value: chunk,
+        value: _startFrame(),
         type: type,
       );
       _logBleEvent(
-        'client chunk sent',
+        'client frame start sent',
         role: 'client',
         direction: 'send',
-        payload: utf8.decode(chunk, allowMalformed: true),
-        bytes: chunk.length,
-        extra: <String, Object?>{
-          'target': peripheral.uuid,
-          'chunk': '${index + 1}/${chunks.length}',
-          'writeType': type.name,
-        },
+        bytes: 1,
+        extra: <String, Object?>{'target': peripheral.uuid},
       );
-      await Future<void>.delayed(const Duration(milliseconds: 24));
-    }
+      onProgress?.call(1 / totalWrites);
+      await Future<void>.delayed(_packetDelay);
 
-    await _centralManager.writeCharacteristic(
-      peripheral,
-      characteristic,
-      value: _endFrame(),
-      type: type,
-    );
-    _logBleEvent(
-      'client frame end sent',
-      role: 'client',
-      direction: 'send',
-      bytes: 1,
-      extra: <String, Object?>{
-        'target': peripheral.uuid,
-      },
-    );
+      for (int index = 0; index < chunks.length; index++) {
+        final chunk = chunks[index];
+        await _centralManager.writeCharacteristic(
+          peripheral,
+          characteristic,
+          value: chunk,
+          type: type,
+        );
+        if (_shouldLogChunk(index, chunks.length)) {
+          _logBleEvent(
+            'client chunk sent',
+            role: 'client',
+            direction: 'send',
+            bytes: chunk.length,
+            extra: <String, Object?>{
+              'target': peripheral.uuid,
+              'chunk': '${index + 1}/${chunks.length}',
+              'chunkSize': chunkSize,
+              'writeType': type.name,
+            },
+          );
+        }
+        onProgress?.call((index + 2) / totalWrites);
+        await Future<void>.delayed(_packetDelay);
+      }
+
+      await _centralManager.writeCharacteristic(
+        peripheral,
+        characteristic,
+        value: _endFrame(),
+        type: type,
+      );
+      _logBleEvent(
+        'client frame end sent',
+        role: 'client',
+        direction: 'send',
+        bytes: 1,
+        extra: <String, Object?>{'target': peripheral.uuid},
+      );
+      onProgress?.call(1);
+    } catch (error) {
+      if (chunkSize > _fallbackPayloadChunkSize) {
+        _logBleEvent(
+          'client chunk send retry',
+          role: 'client',
+          direction: 'system',
+          extra: <String, Object?>{
+            'failedChunkSize': chunkSize,
+            'fallbackChunkSize': _fallbackPayloadChunkSize,
+            'error': error,
+          },
+        );
+        await _sendClientTextInChunks(
+          text,
+          onProgress: onProgress,
+          chunkSize: _fallbackPayloadChunkSize,
+        );
+        return;
+      }
+
+      rethrow;
+    }
   }
 
-  Future<void> _notifySingleCentral(Central central, Uint8List value) async {
+  Future<void> _notifySingleCentral(
+    Central central,
+    Uint8List value, {
+    ValueChanged<double>? onProgress,
+  }) async {
     final characteristic = _serverCharacteristic;
     if (characteristic == null) {
+      onProgress?.call(1);
       return;
     }
 
@@ -1325,12 +1549,14 @@ class _PhoneToPhoneBlePageState extends State<PhoneToPhoneBlePage> {
           'reason': 'max notify length is 0',
         },
       );
+      onProgress?.call(1);
       return;
     }
     final chunkSize = maximumLength < _payloadChunkSize
         ? maximumLength
         : _payloadChunkSize;
     final chunks = _chunkBytes(value, chunkSize);
+    final totalWrites = chunks.length + 2;
 
     await _peripheralManager.notifyCharacteristic(
       central,
@@ -1342,11 +1568,10 @@ class _PhoneToPhoneBlePageState extends State<PhoneToPhoneBlePage> {
       role: 'server',
       direction: 'send',
       bytes: 1,
-      extra: <String, Object?>{
-        'target': central.uuid,
-      },
+      extra: <String, Object?>{'target': central.uuid},
     );
-    await Future<void>.delayed(const Duration(milliseconds: 24));
+    onProgress?.call(1 / totalWrites);
+    await Future<void>.delayed(_packetDelay);
 
     for (int index = 0; index < chunks.length; index++) {
       final chunk = chunks[index];
@@ -1355,19 +1580,22 @@ class _PhoneToPhoneBlePageState extends State<PhoneToPhoneBlePage> {
         characteristic,
         value: chunk,
       );
-      _logBleEvent(
-        'notification chunk sent',
-        role: 'server',
-        direction: 'send',
-        payload: utf8.decode(chunk, allowMalformed: true),
-        bytes: chunk.length,
-        extra: <String, Object?>{
-          'target': central.uuid,
-          'chunk': '${index + 1}/${chunks.length}',
-          'maxNotifyLength': maximumLength,
-        },
-      );
-      await Future<void>.delayed(const Duration(milliseconds: 24));
+      if (_shouldLogChunk(index, chunks.length)) {
+        _logBleEvent(
+          'notification chunk sent',
+          role: 'server',
+          direction: 'send',
+          bytes: chunk.length,
+          extra: <String, Object?>{
+            'target': central.uuid,
+            'chunk': '${index + 1}/${chunks.length}',
+            'chunkSize': chunkSize,
+            'maxNotifyLength': maximumLength,
+          },
+        );
+      }
+      onProgress?.call((index + 2) / totalWrites);
+      await Future<void>.delayed(_packetDelay);
     }
 
     await _peripheralManager.notifyCharacteristic(
@@ -1380,10 +1608,9 @@ class _PhoneToPhoneBlePageState extends State<PhoneToPhoneBlePage> {
       role: 'server',
       direction: 'send',
       bytes: 1,
-      extra: <String, Object?>{
-        'target': central.uuid,
-      },
+      extra: <String, Object?>{'target': central.uuid},
     );
+    onProgress?.call(1);
   }
 
   Future<void> stopAll() async {
@@ -1409,6 +1636,9 @@ class _PhoneToPhoneBlePageState extends State<PhoneToPhoneBlePage> {
       _serverReceiveBuffer.clear();
       _clientReceivingChunks = false;
       _serverReceivingChunks = false;
+      _sendingJsonFile = false;
+      _jsonSendProgress = null;
+      _jsonSendProgressLabel = null;
     });
   }
 
@@ -1552,12 +1782,17 @@ class _PhoneToPhoneBlePageState extends State<PhoneToPhoneBlePage> {
           subtitle: 'Quick status for the active connection.',
         ),
         const SizedBox(height: 12),
-        if( !_actingAsServer)
-            ActionCard(
-                canWrite: canSend,
-                subscribed: _subscribed,
-                onWrite: sendMessage,
-              ),
+        if (_actingAsServer)
+          ServerInfoCard(
+            serverValue: serverValue,
+            subscribers: _subscribedCentrals.length,
+          )
+        else
+          ActionCard(
+            canWrite: canSend,
+            subscribed: _subscribed,
+            onWrite: sendMessage,
+          ),
       ],
     );
   }
@@ -1619,11 +1854,18 @@ class _PhoneToPhoneBlePageState extends State<PhoneToPhoneBlePage> {
           scanning: _scanning,
           subscribed: _subscribed,
         ),
-        ActionCard(
-                canWrite: canSend,
-                subscribed: _subscribed,
-                onWrite: sendMessage,
-              ),
+        const SizedBox(height: 12),
+        if (_actingAsServer)
+          ServerInfoCard(
+            serverValue: serverValue,
+            subscribers: _subscribedCentrals.length,
+          )
+        else
+          ActionCard(
+            canWrite: canSend,
+            subscribed: _subscribed,
+            onWrite: sendMessage,
+          ),
         const SizedBox(height: 12),
         Expanded(
           child: _messages.isEmpty
@@ -1640,7 +1882,7 @@ class _PhoneToPhoneBlePageState extends State<PhoneToPhoneBlePage> {
         const SizedBox(height: 12),
         ComposerCard(
           controller: _messageController,
-          enabled: canSend || _actingAsServer,
+          enabled: (canSend || _actingAsServer) && !_sendingJsonFile,
           onAttach: canSend || _actingAsServer ? _pickAndSendJsonFile : null,
           hintText: _actingAsServer
               ? 'Type text or tap + for JSON file'
@@ -1649,9 +1891,9 @@ class _PhoneToPhoneBlePageState extends State<PhoneToPhoneBlePage> {
               : 'Connect first to send a message',
           buttonLabel: 'Send',
           showButton: !_actingAsServer,
-          onSend: canSend
-              ? sendMessage
-              : null,
+          onSend: canSend ? sendMessage : null,
+          progress: _jsonSendProgress,
+          progressLabel: _jsonSendProgressLabel,
         ),
       ],
     );
